@@ -401,3 +401,12 @@ FodyWeavers.xsd
 .env
 embeddings/
 *.local.sql
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/.terraform/providers/registry.terraform.io/hashicorp/azurerm/4.35.0/windows_amd64/LICENSE.txt
+.gitignore
+terraform/.terraform/providers/registry.terraform.io/hashicorp/null/3.2.4/windows_amd64/LICENSE.txt
+terraform/.terraform/providers/registry.terraform.io/hashicorp/null/3.2.4/windows_amd64/terraform-provider-null_v3.2.4_x5.exe
+.gitignore
+terraform/.terraform/providers/registry.terraform.io/hashicorp/azurerm/4.35.0/windows_amd64/terraform-provider-azurerm_v4.35.0_x5.exe
