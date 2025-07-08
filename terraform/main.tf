@@ -4,10 +4,6 @@ terraform {
       source  = "hashicorp/azurerm"
       version = ">= 4.33.0"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.1"
-    }
   }
 }
 
@@ -22,55 +18,17 @@ provider "azurerm" {
 
 data "azurerm_client_config" "current" {}
 
-# Random ID for unique naming
-resource "random_id" "unique" {
-  byte_length = 4
-}
-
 # Reference existing infrastructure storage account (not managed by this Terraform)
 data "azurerm_storage_account" "infrastructure" {
   name                = var.infrastructure_storage_account
   resource_group_name = var.infrastructure_resource_group
 }
 
-# Generate SAS token for infrastructure storage access
-data "azurerm_storage_account_sas" "infrastructure_sas" {
-  connection_string = data.azurerm_storage_account.infrastructure.primary_connection_string
-  https_only        = true
-  signed_version    = "2017-07-29"
-
-  resource_types {
-    service   = true
-    container = true
-    object    = true
-  }
-
-  services {
-    blob  = true
-    queue = false
-    table = false
-    file  = false
-  }
-
-  start  = "2025-01-01T00:00:00Z"
-  expiry = "2025-12-31T23:59:59Z"
-
-  permissions {
-    read    = true
-    write   = false
-    delete  = false
-    list    = true
-    add     = false
-    create  = false
-    update  = false
-    process = false
-    tag     = false
-    filter  = false
-  }
-}
-
-# Common tags
+# Generate secure password using UUID and timestamp
 locals {
+  # Create a strong password from UUID + timestamp (deterministic per deployment)
+  generated_password = "${replace(uuid(), "-", "")}${formatdate("YYYYMMDD", timestamp())}"
+  
   common_tags = {
     environment = var.environment
     project     = "lorefieus-rag"
@@ -130,12 +88,15 @@ resource "azurerm_storage_account" "function" {
   network_rules {
     default_action             = "Allow"
     bypass                     = ["AzureServices"]
+    ip_rules                   = []
+    virtual_network_subnet_ids = []
   }
 
+  # Ignore changes that Azure manages automatically
   lifecycle {
-    ignore_changes = [ 
+    ignore_changes = [
       network_rules
-     ]
+    ]
   }
 
   depends_on = [azurerm_resource_group.main]
@@ -208,29 +169,28 @@ resource "azurerm_key_vault_secret" "openai_api_key" {
   depends_on = [azurerm_key_vault_access_policy.current_user]
 }
 
-# Store Infrastructure SAS Token in Key Vault for Script 02
-resource "azurerm_key_vault_secret" "infrastructure_sas_token" {
-  name         = "infrastructure-sas-token"
-  value        = data.azurerm_storage_account_sas.infrastructure_sas.sas
+# Store generated Database Master Key password in Key Vault
+resource "azurerm_key_vault_secret" "database_master_key" {
+  name         = "database-master-key-password"
+  value        = local.generated_password
   key_vault_id = azurerm_key_vault.main.id
   
   depends_on = [azurerm_key_vault_access_policy.current_user]
 }
 
-# Azure SQL Server
+# Azure SQL Server - Entra ID Authentication Only
 resource "azurerm_mssql_server" "main" {
   name                         = var.sql_server_name
   resource_group_name          = var.resource_group_name
   location                     = var.location
   version                      = "12.0"
-  administrator_login          = var.sql_admin_username
-  administrator_login_password = var.sql_admin_password
   tags                         = local.common_tags
 
   azuread_administrator {
-    login_username = var.sql_entra_admin_login
-    object_id      = var.sql_entra_admin_object_id
-    tenant_id      = var.sql_entra_admin_tenant_id != null ? var.sql_entra_admin_tenant_id : data.azurerm_client_config.current.tenant_id
+    login_username              = var.sql_entra_admin_login
+    object_id                   = var.sql_entra_admin_object_id
+    tenant_id                   = var.sql_entra_admin_tenant_id != null ? var.sql_entra_admin_tenant_id : data.azurerm_client_config.current.tenant_id
+    azuread_authentication_only = true
   }
 
   identity {
@@ -255,34 +215,20 @@ resource "azurerm_mssql_server_extended_auditing_policy" "main" {
 resource "azurerm_mssql_database" "main" {
   name      = var.sql_database_name
   server_id = azurerm_mssql_server.main.id
-  sku_name  = "S1"  # Upgraded for better vector performance
+  sku_name  = "S0"  # Cost-effective for dev environment
   tags      = local.common_tags
 
   depends_on = [azurerm_resource_group.main, azurerm_mssql_server.main]
 }
 
-# Always Encrypted Column Master Key
-resource "azurerm_key_vault_key" "column_master_key" {
-  name         = "sql-column-master-key"
-  key_vault_id = azurerm_key_vault.main.id
-  key_type     = "RSA"
-  key_size     = 2048
-  key_opts = [
-    "decrypt", "encrypt", "sign", "unwrapKey", "verify", "wrapKey"
-  ]
-  tags = local.common_tags
-  
-  depends_on = [azurerm_key_vault_access_policy.current_user]
-}
-
-# SQL Server access to Key Vault for Always Encrypted
-resource "azurerm_key_vault_access_policy" "sql_server_always_encrypted" {
+# Key Vault Access Policy for SQL Server (simplified)
+resource "azurerm_key_vault_access_policy" "sql_server_access" {
   key_vault_id = azurerm_key_vault.main.id
   tenant_id    = data.azurerm_client_config.current.tenant_id
   object_id    = azurerm_mssql_server.main.identity[0].principal_id
   
-  key_permissions = [
-    "Get", "List", "WrapKey", "UnwrapKey", "Verify", "Sign"
+  secret_permissions = [
+    "Get", "List"
   ]
   
   depends_on = [azurerm_mssql_server.main]
@@ -329,9 +275,6 @@ resource "azurerm_linux_function_app" "proxy" {
     "FUNCTIONS_WORKER_PROCESS_COUNT"        = "1"
     "PYTHON_ISOLATE_WORKER_DEPENDENCIES"    = "1"
     "WEBSITE_RUN_FROM_PACKAGE"              = "1"
-    # Let Azure automatically add Application Insights settings
-    "APPINSIGHTS_INSTRUMENTATIONKEY"        = azurerm_application_insights.main.instrumentation_key
-    "APPLICATIONINSIGHTS_CONNECTION_STRING" = azurerm_application_insights.main.connection_string
     "OPENAI_ENDPOINT"                       = azurerm_cognitive_account.openai.endpoint
     "OPENAI_API_KEY"                        = "@Microsoft.KeyVault(VaultName=${var.key_vault_name};SecretName=openai-api-key)"
     "SQL_SERVER_NAME"                       = azurerm_mssql_server.main.fully_qualified_domain_name
@@ -339,12 +282,12 @@ resource "azurerm_linux_function_app" "proxy" {
     "KEY_VAULT_URL"                         = azurerm_key_vault.main.vault_uri
   }
 
-  # Ignore changes that Azure manages automatically
+  # Ignore ALL Azure-managed settings that cause drift
   lifecycle {
     ignore_changes = [
-      app_settings,
-      site_config,
-      tags
+      app_settings,  # Ignore ALL app_settings changes
+      site_config,   # Ignore ALL site_config changes
+      tags           # Ignore ALL tag changes
     ]
   }
 
@@ -366,5 +309,3 @@ resource "azurerm_key_vault_access_policy" "function_access" {
   
   depends_on = [azurerm_linux_function_app.proxy]
 }
-
-

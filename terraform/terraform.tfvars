@@ -14,8 +14,6 @@ sql_database_name           = "db-user1"
 openai_account_name         = "cogsvc-lorefieus"
 
 # SQL Server Configuration
-sql_admin_username          = "sqladmin"
-sql_admin_password          = "M33pl3It!"
 sql_entra_admin_login       = "bloblore"
 sql_entra_admin_object_id   = "17ff502d-2d4b-47c3-abf2-058a79829af6"
 sql_entra_admin_tenant_id   = "f0fc66d5-e40c-49f8-b32f-a9b41d633187"
