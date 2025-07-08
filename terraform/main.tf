@@ -4,6 +4,10 @@ terraform {
       source  = "hashicorp/azurerm"
       version = ">= 4.33.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.1"
+    }
   }
 }
 
@@ -13,46 +17,97 @@ provider "azurerm" {
       prevent_deletion_if_contains_resources = false
     }
   }
-  # Optional: uncomment if not using ARM_SUBSCRIPTION_ID env var
   subscription_id = var.subid
 }
 
 data "azurerm_client_config" "current" {}
 
+# Random ID for unique naming
+resource "random_id" "unique" {
+  byte_length = 4
+}
+
+# Reference existing infrastructure storage account (not managed by this Terraform)
+data "azurerm_storage_account" "infrastructure" {
+  name                = var.infrastructure_storage_account
+  resource_group_name = var.infrastructure_resource_group
+}
+
+# Generate SAS token for infrastructure storage access
+data "azurerm_storage_account_sas" "infrastructure_sas" {
+  connection_string = data.azurerm_storage_account.infrastructure.primary_connection_string
+  https_only        = true
+  signed_version    = "2017-07-29"
+
+  resource_types {
+    service   = true
+    container = true
+    object    = true
+  }
+
+  services {
+    blob  = true
+    queue = false
+    table = false
+    file  = false
+  }
+
+  start  = "2025-01-01T00:00:00Z"
+  expiry = "2025-12-31T23:59:59Z"
+
+  permissions {
+    read    = true
+    write   = false
+    delete  = false
+    list    = true
+    add     = false
+    create  = false
+    update  = false
+    process = false
+    tag     = false
+    filter  = false
+  }
+}
+
+# Common tags
+locals {
+  common_tags = {
+    environment = var.environment
+    project     = "lorefieus-rag"
+    managed_by  = "terraform"
+  }
+}
+
 # Resource Group
 resource "azurerm_resource_group" "main" {
   name     = var.resource_group_name
   location = var.location
+  tags     = local.common_tags
 }
 
-# Log Analytics Workspace - same resource group
+# Log Analytics Workspace
 resource "azurerm_log_analytics_workspace" "main" {
-  name                = "law-lore"
+  name                = "law-lore-${var.environment}"
   location            = var.location
-  resource_group_name = var.resource_group_name  # Same as everything else
+  resource_group_name = var.resource_group_name
   sku                 = "PerGB2018"
   retention_in_days   = 30
-  tags = {
-    environment = "dev"
-    project     = "lorefieus-rag"
-  }
+  tags                = local.common_tags
+  
   depends_on = [azurerm_resource_group.main]
 }
 
-# Connect Application Insights to Log Analytics (optional but recommended)
+# Application Insights
 resource "azurerm_application_insights" "main" {
-  name                = "appi-lore"
+  name                = "appi-lore-${var.environment}"
   location            = var.location
   resource_group_name = var.resource_group_name
   application_type    = "web"
-  workspace_id        = azurerm_log_analytics_workspace.main.id  # Link them together
-  tags = {
-    environment = "dev"
-    project     = "lorefieus-rag"
-  }
+  workspace_id        = azurerm_log_analytics_workspace.main.id
+  tags                = local.common_tags
+  
   depends_on = [azurerm_resource_group.main, azurerm_log_analytics_workspace.main]
 }
-
 
 # Storage Account for Function App
 resource "azurerm_storage_account" "function" {
@@ -63,6 +118,7 @@ resource "azurerm_storage_account" "function" {
   account_replication_type      = "LRS"
   account_kind                  = "StorageV2"
   is_hns_enabled                = true
+  tags                          = local.common_tags
 
   blob_properties {
     delete_retention_policy {
@@ -70,59 +126,31 @@ resource "azurerm_storage_account" "function" {
     }
   }
 
+  # Explicitly define network rules to match what Azure creates
   network_rules {
-    default_action = "Allow"
-    bypass         = ["AzureServices"]
+    default_action             = "Allow"
+    bypass                     = ["AzureServices"]
+  }
+
+  lifecycle {
+    ignore_changes = [ 
+      network_rules
+     ]
   }
 
   depends_on = [azurerm_resource_group.main]
 }
 
-# App Service Plan (Consumption)
+# App Service Plan
 resource "azurerm_service_plan" "function" {
   name                = var.service_plan_name
   location            = var.location
   resource_group_name = var.resource_group_name
   os_type             = "Linux"
   sku_name            = "Y1"
+  tags                = local.common_tags
+  
   depends_on = [azurerm_resource_group.main]
-}
-
-# Azure Function App
-resource "azurerm_linux_function_app" "proxy" {
-  name                       = var.function_app_name
-  location                   = var.location
-  resource_group_name        = var.resource_group_name
-  service_plan_id            = azurerm_service_plan.function.id
-  storage_account_name       = azurerm_storage_account.function.name
-  storage_account_access_key = azurerm_storage_account.function.primary_access_key
-
-  identity {
-    type = "SystemAssigned"
-  }
-
-  site_config {
-    application_stack {
-      python_version = "3.12"
-    }
-  }
-
-  app_settings = {
-    "FUNCTIONS_WORKER_RUNTIME"              = "python"
-    "FUNCTIONS_WORKER_PROCESS_COUNT"        = "1"
-    "PYTHON_ISOLATE_WORKER_DEPENDENCIES"    = "1"
-    "WEBSITE_RUN_FROM_PACKAGE"              = "1"
-    "APPINSIGHTS_INSTRUMENTATIONKEY"        = azurerm_application_insights.main.instrumentation_key
-    "APPLICATIONINSIGHTS_CONNECTION_STRING" = azurerm_application_insights.main.connection_string
-    #RAG Components
-    "OPENAI_ENDPOINT"                       = azurerm_cognitive_account.openai.endpoint
-    "OPENAI_API_KEY"                        = "@Microsoft.KeyVault(VaultName=${var.key_vault_name};SecretName=openai-api-key)"  # Key Vault reference
-    "SQL_SERVER_NAME"                       = azurerm_mssql_server.main.fully_qualified_domain_name
-    "SQL_DATABASE_NAME"                     = azurerm_mssql_database.main.name
-    "KEY_VAULT_URL"                         = azurerm_key_vault.main.vault_uri
-  }
-
-  depends_on = [azurerm_cognitive_account.openai, azurerm_resource_group.main, azurerm_application_insights.main, azurerm_key_vault.main]
 }
 
 # Key Vault
@@ -133,10 +161,12 @@ resource "azurerm_key_vault" "main" {
   tenant_id                   = data.azurerm_client_config.current.tenant_id
   sku_name                    = "standard"
   purge_protection_enabled    = false
+  tags                        = local.common_tags
+  
   depends_on = [azurerm_resource_group.main]
 }
 
-# Key Vault Access Policy for Current User (Terraform deployer)
+# Key Vault Access Policy for Current User
 resource "azurerm_key_vault_access_policy" "current_user" {
   key_vault_id = azurerm_key_vault.main.id
   tenant_id    = data.azurerm_client_config.current.tenant_id
@@ -153,16 +183,6 @@ resource "azurerm_key_vault_access_policy" "current_user" {
   depends_on = [azurerm_key_vault.main]
 }
 
-# Key Vault Access Policy for Function App
-resource "azurerm_key_vault_access_policy" "function_access" {
-  key_vault_id = azurerm_key_vault.main.id
-  tenant_id    = data.azurerm_client_config.current.tenant_id
-  object_id    = azurerm_linux_function_app.proxy.identity[0].principal_id
-
-  secret_permissions = ["Get"]
-  depends_on = [azurerm_resource_group.main, azurerm_service_plan.function, azurerm_linux_function_app.proxy]
-}
-
 # Azure OpenAI Cognitive Account
 resource "azurerm_cognitive_account" "openai" {
   name                = var.openai_account_name
@@ -170,27 +190,34 @@ resource "azurerm_cognitive_account" "openai" {
   resource_group_name = var.resource_group_name
   kind                = "OpenAI"
   sku_name            = "S0"
+  tags                = local.common_tags
 
   identity {
     type = "SystemAssigned"
   }
 
-  tags = {
-    environment = "dev"
-  }
-
   depends_on = [azurerm_resource_group.main]
 }
 
-# Store the openai api key in the vault
+# Store OpenAI API key in Key Vault
 resource "azurerm_key_vault_secret" "openai_api_key" {
   name         = "openai-api-key"
   value        = azurerm_cognitive_account.openai.primary_access_key
   key_vault_id = azurerm_key_vault.main.id
+  
   depends_on = [azurerm_key_vault_access_policy.current_user]
 }
 
-# Azure SQL Server (MSSQL)
+# Store Infrastructure SAS Token in Key Vault for Script 02
+resource "azurerm_key_vault_secret" "infrastructure_sas_token" {
+  name         = "infrastructure-sas-token"
+  value        = data.azurerm_storage_account_sas.infrastructure_sas.sas
+  key_vault_id = azurerm_key_vault.main.id
+  
+  depends_on = [azurerm_key_vault_access_policy.current_user]
+}
+
+# Azure SQL Server
 resource "azurerm_mssql_server" "main" {
   name                         = var.sql_server_name
   resource_group_name          = var.resource_group_name
@@ -198,19 +225,22 @@ resource "azurerm_mssql_server" "main" {
   version                      = "12.0"
   administrator_login          = var.sql_admin_username
   administrator_login_password = var.sql_admin_password
+  tags                         = local.common_tags
 
   azuread_administrator {
     login_username = var.sql_entra_admin_login
-    object_id = var.sql_entra_admin_object_id
-    tenant_id = var.sql_entra_admin_tenant_id != null ? var.sql_entra_admin_tenant_id : data.azurerm_client_config.current.tenant_id
+    object_id      = var.sql_entra_admin_object_id
+    tenant_id      = var.sql_entra_admin_tenant_id != null ? var.sql_entra_admin_tenant_id : data.azurerm_client_config.current.tenant_id
   }
 
   identity {
     type = "SystemAssigned"
   }
+  
   depends_on = [azurerm_resource_group.main]
 }
 
+# SQL Server Auditing Policies
 resource "azurerm_mssql_server_microsoft_support_auditing_policy" "main" {
   server_id = azurerm_mssql_server.main.id
   enabled   = false
@@ -225,7 +255,8 @@ resource "azurerm_mssql_server_extended_auditing_policy" "main" {
 resource "azurerm_mssql_database" "main" {
   name      = var.sql_database_name
   server_id = azurerm_mssql_server.main.id
-  sku_name  = "S0"
+  sku_name  = "S1"  # Upgraded for better vector performance
+  tags      = local.common_tags
 
   depends_on = [azurerm_resource_group.main, azurerm_mssql_server.main]
 }
@@ -237,13 +268,10 @@ resource "azurerm_key_vault_key" "column_master_key" {
   key_type     = "RSA"
   key_size     = 2048
   key_opts = [
-    "decrypt",
-    "encrypt",
-    "sign",
-    "unwrapKey",
-    "verify",
-    "wrapKey",
+    "decrypt", "encrypt", "sign", "unwrapKey", "verify", "wrapKey"
   ]
+  tags = local.common_tags
+  
   depends_on = [azurerm_key_vault_access_policy.current_user]
 }
 
@@ -252,18 +280,15 @@ resource "azurerm_key_vault_access_policy" "sql_server_always_encrypted" {
   key_vault_id = azurerm_key_vault.main.id
   tenant_id    = data.azurerm_client_config.current.tenant_id
   object_id    = azurerm_mssql_server.main.identity[0].principal_id
+  
   key_permissions = [
-    "Get",
-    "List",
-    "WrapKey",
-    "UnwrapKey",
-    "Verify",
-    "Sign"
+    "Get", "List", "WrapKey", "UnwrapKey", "Verify", "Sign"
   ]
+  
   depends_on = [azurerm_mssql_server.main]
 }
 
-# Allow Azure services to access SQL Server
+# SQL Server Firewall Rules
 resource "azurerm_mssql_firewall_rule" "azure_services" {
   name             = "AllowAzureServices"
   server_id        = azurerm_mssql_server.main.id
@@ -271,7 +296,6 @@ resource "azurerm_mssql_firewall_rule" "azure_services" {
   end_ip_address   = "0.0.0.0"
 }
 
-# Allow your development IP (conditional)
 resource "azurerm_mssql_firewall_rule" "development" {
   count            = var.dev_ip_address != null ? 1 : 0
   name             = "DevelopmentAccess"
@@ -279,4 +303,68 @@ resource "azurerm_mssql_firewall_rule" "development" {
   start_ip_address = var.dev_ip_address
   end_ip_address   = var.dev_ip_address
 }
+
+# Azure Function App
+resource "azurerm_linux_function_app" "proxy" {
+  name                       = var.function_app_name
+  location                   = var.location
+  resource_group_name        = var.resource_group_name
+  service_plan_id            = azurerm_service_plan.function.id
+  storage_account_name       = azurerm_storage_account.function.name
+  storage_account_access_key = azurerm_storage_account.function.primary_access_key
+  tags                       = local.common_tags
+
+  identity {
+    type = "SystemAssigned"
+  }
+
+  site_config {
+    application_stack {
+      python_version = "3.12"
+    }
+  }
+
+  app_settings = {
+    "FUNCTIONS_WORKER_RUNTIME"              = "python"
+    "FUNCTIONS_WORKER_PROCESS_COUNT"        = "1"
+    "PYTHON_ISOLATE_WORKER_DEPENDENCIES"    = "1"
+    "WEBSITE_RUN_FROM_PACKAGE"              = "1"
+    # Let Azure automatically add Application Insights settings
+    "APPINSIGHTS_INSTRUMENTATIONKEY"        = azurerm_application_insights.main.instrumentation_key
+    "APPLICATIONINSIGHTS_CONNECTION_STRING" = azurerm_application_insights.main.connection_string
+    "OPENAI_ENDPOINT"                       = azurerm_cognitive_account.openai.endpoint
+    "OPENAI_API_KEY"                        = "@Microsoft.KeyVault(VaultName=${var.key_vault_name};SecretName=openai-api-key)"
+    "SQL_SERVER_NAME"                       = azurerm_mssql_server.main.fully_qualified_domain_name
+    "SQL_DATABASE_NAME"                     = azurerm_mssql_database.main.name
+    "KEY_VAULT_URL"                         = azurerm_key_vault.main.vault_uri
+  }
+
+  # Ignore changes that Azure manages automatically
+  lifecycle {
+    ignore_changes = [
+      app_settings,
+      site_config,
+      tags
+    ]
+  }
+
+  depends_on = [
+    azurerm_cognitive_account.openai,
+    azurerm_resource_group.main,
+    azurerm_application_insights.main,
+    azurerm_key_vault.main
+  ]
+}
+
+# Key Vault Access Policy for Function App
+resource "azurerm_key_vault_access_policy" "function_access" {
+  key_vault_id = azurerm_key_vault.main.id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = azurerm_linux_function_app.proxy.identity[0].principal_id
+
+  secret_permissions = ["Get"]
+  
+  depends_on = [azurerm_linux_function_app.proxy]
+}
+
 

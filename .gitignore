@@ -410,3 +410,14 @@ terraform/.terraform/providers/registry.terraform.io/hashicorp/null/3.2.4/window
 terraform/.terraform/providers/registry.terraform.io/hashicorp/null/3.2.4/windows_amd64/terraform-provider-null_v3.2.4_x5.exe
 .gitignore
 terraform/.terraform/providers/registry.terraform.io/hashicorp/azurerm/4.35.0/windows_amd64/terraform-provider-azurerm_v4.35.0_x5.exe
+terraform/.terraform/providers/registry.terraform.io/betr-io/mssql/0.3.1/windows_amd64/CHANGELOG.md
+terraform/.terraform/providers/registry.terraform.io/betr-io/mssql/0.3.1/windows_amd64/LICENSE
+terraform/.terraform/providers/registry.terraform.io/betr-io/mssql/0.3.1/windows_amd64/README.md
+terraform/.terraform/providers/registry.terraform.io/betr-io/mssql/0.3.1/windows_amd64/terraform-provider-mssql_v0.3.1.exe
+terraform/.terraform/providers/registry.terraform.io/hashicorp/local/2.5.3/windows_amd64/LICENSE.txt
+terraform/.terraform/providers/registry.terraform.io/hashicorp/local/2.5.3/windows_amd64/terraform-provider-local_v2.5.3_x5.exe
+terraform/.terraform/providers/registry.terraform.io/hashicorp/random/3.7.2/windows_amd64/LICENSE.txt
+terraform/.terraform/providers/registry.terraform.io/hashicorp/random/3.7.2/windows_amd64/terraform-provider-random_v3.7.2_x5.exe
+terraform/.terraform/providers/registry.terraform.io/pgssoft/mssql/0.6.0/windows_amd64/LICENSE
+terraform/.terraform/providers/registry.terraform.io/pgssoft/mssql/0.6.0/windows_amd64/README.md
+terraform/.terraform/providers/registry.terraform.io/pgssoft/mssql/0.6.0/windows_amd64/terraform-provider-mssql_v0.6.0.exe
