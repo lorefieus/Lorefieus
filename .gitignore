@@ -421,3 +421,5 @@ terraform/.terraform/providers/registry.terraform.io/hashicorp/random/3.7.2/wind
 terraform/.terraform/providers/registry.terraform.io/pgssoft/mssql/0.6.0/windows_amd64/LICENSE
 terraform/.terraform/providers/registry.terraform.io/pgssoft/mssql/0.6.0/windows_amd64/README.md
 terraform/.terraform/providers/registry.terraform.io/pgssoft/mssql/0.6.0/windows_amd64/terraform-provider-mssql_v0.6.0.exe
+terraform/.terraform/providers/registry.terraform.io/hashicorp/http/3.5.0/windows_amd64/terraform-provider-http_v3.5.0_x5.exe
+terraform/.terraform/providers/registry.terraform.io/hashicorp/http/3.5.0/windows_amd64/LICENSE.txt

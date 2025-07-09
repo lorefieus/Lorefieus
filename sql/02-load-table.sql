@@ -3,7 +3,7 @@
 */
 if not exists(select * from sys.symmetric_keys where [name] = '##MS_DatabaseMasterKey##')
 begin
-	create master key encryption by password = 'Pa$$w0rd!'
+	create master key encryption by password = '264d6dd8cb8ebd304f368b5649df70a920250708'
 end
 go
 if exists(select * from sys.[external_data_sources] where name = 'openai_playground')
